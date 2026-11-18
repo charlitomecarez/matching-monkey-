@@ -163,10 +163,9 @@ await ensure("index ownerId_key", () =>
 // States are saved as gzip (`state.json.gz`; Appwrite checks the last extension, "gz"); "json" is
 // kept so older uncompressed state files stay valid.
 const MAX = 50_000_000; // Appwrite Cloud caps maximumFileSize at 50,000,000 bytes
-for (const [id, name, extensions] of [
-  ["originals", "Originals", ["xlsx"]],
-  ["states", "States", ["json", "gz"]],
-]) {
+// One bucket holds both originals (.xlsx) and saved states (.json.gz) — the Free plan allows a
+// single bucket. Keep this ID in sync with IDS.originals / IDS.states in lib/appwrite/config.ts.
+for (const [id, name, extensions] of [["originals", "Files", ["xlsx", "json", "gz"]]]) {
   const settings = {
     bucketId: id,
     name,

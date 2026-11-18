@@ -20,7 +20,7 @@ cp .env.example .env.local
 node --env-file=.env.local scripts/setup-appwrite.mjs
 ```
 
-The script is idempotent. It creates the `matching` database, the `uploads` table (no client permissions: only the server touches rows), the `originals` and `states` buckets (members may upload; each file is readable only by its owner), the `members` team, and the owner account with an owner membership. Re-running reports what already existed and re-applies the table and bucket settings. `OWNER_*` variables are used only by this script.
+The script is idempotent. It creates the `matching` database, the `uploads` table (no client permissions: only the server touches rows), one storage bucket, `originals`, holding both the uploaded .xlsx files and the saved workbook state (Appwrite Cloud's Free plan allows a single bucket; members may upload, and each file is readable only by its owner), the `members` team, and the owner account with an owner membership. Re-running reports what already existed and re-applies the table and bucket settings. `OWNER_*` variables are used only by this script.
 
 ### After setup
 

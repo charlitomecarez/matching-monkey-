@@ -1,8 +1,10 @@
 export const IDS = {
   database: "matching",
   uploads: "uploads",
+  // Appwrite Cloud's Free plan allows one storage bucket, so original .xlsx files and saved
+  // state files share it. Their IDs can't collide: state files are `<uploadId>.v<n>`.
   originals: "originals",
-  states: "states",
+  states: "originals",
   team: "members",
 } as const;
 
