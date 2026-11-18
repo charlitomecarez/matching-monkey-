@@ -20,7 +20,7 @@ cp .env.example .env.local
 node --env-file=.env.local scripts/setup-appwrite.mjs
 ```
 
-The script is idempotent. It creates the `matching` database, the `uploads` table (no client permissions: only the server touches rows), the `originals` and `states` buckets (members may upload; each file is readable only by its owner), the `members` team, and the owner account with an owner membership. Re-running reports what already existed and re-applies the table and bucket settings. `OWNER_*` variables are used only by this script.
+The script is idempotent. It creates the `matching` database, the `uploads` table (no client permissions: only the server touches rows), one storage bucket, `originals`, holding both the uploaded .xlsx files and the saved workbook state (Appwrite Cloud's Free plan allows a single bucket; members may upload, and each file is readable only by its owner), the `members` team, and the owner account with an owner membership. Re-running reports what already existed and re-applies the table and bucket settings. `OWNER_*` variables are used only by this script.
 
 ### After setup
 
@@ -28,7 +28,7 @@ Sign in to the app as `OWNER_EMAIL`, open **Admin**, and invite people by email.
 
 ### Appwrite Cloud plan notes
 
-- **File size limit:** the script sets each bucket's `maximumFileSize` to 50 MB. The Free plan allows smaller files per upload; if the script or console rejects the value, lower `MAX` in `scripts/setup-appwrite.mjs` and re-run it. (Saved workbook state is stored gzip-compressed and capped at 5 MB regardless.)
+- **File size limit:** the script sets each bucket's `maximumFileSize` to 50,000,000 bytes (Appwrite Cloud's maximum). The Free plan allows smaller files per upload; if the script or console rejects the value, lower `MAX` in `scripts/setup-appwrite.mjs` and re-run it. (Saved workbook state is stored gzip-compressed and capped at 5 MB regardless.)
 - **Pausing:** Free projects may be paused after a period of inactivity. Reopen the project in the console to resume it.
 - **Invite emails** are sent by Appwrite's default SMTP. For production, configure a custom SMTP server (Settings > SMTP) so invites come from your domain and are less likely to land in spam.
 
