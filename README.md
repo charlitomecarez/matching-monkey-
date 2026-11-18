@@ -28,7 +28,7 @@ Sign in to the app as `OWNER_EMAIL`, open **Admin**, and invite people by email.
 
 ### Appwrite Cloud plan notes
 
-- **File size limit:** the script sets each bucket's `maximumFileSize` to 50 MB. The Free plan allows smaller files per upload; if the script or console rejects the value, lower `MAX` in `scripts/setup-appwrite.mjs` and re-run it. (Saved workbook state is stored gzip-compressed and capped at 5 MB regardless.)
+- **File size limit:** the script sets each bucket's `maximumFileSize` to 50,000,000 bytes (Appwrite Cloud's maximum). The Free plan allows smaller files per upload; if the script or console rejects the value, lower `MAX` in `scripts/setup-appwrite.mjs` and re-run it. (Saved workbook state is stored gzip-compressed and capped at 5 MB regardless.)
 - **Pausing:** Free projects may be paused after a period of inactivity. Reopen the project in the console to resume it.
 - **Invite emails** are sent by Appwrite's default SMTP. For production, configure a custom SMTP server (Settings > SMTP) so invites come from your domain and are less likely to land in spam.
 

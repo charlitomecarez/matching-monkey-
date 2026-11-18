@@ -144,7 +144,7 @@ await ensure("index ownerId_key", () =>
 // Buckets. If the console rejects MAX (the Free plan has a lower per-file limit), lower it here.
 // States are saved as gzip (`state.json.gz`; Appwrite checks the last extension, "gz"); "json" is
 // kept so older uncompressed state files stay valid.
-const MAX = 50 * 1024 * 1024;
+const MAX = 50_000_000; // Appwrite Cloud caps maximumFileSize at 50,000,000 bytes
 for (const [id, name, extensions] of [
   ["originals", "Originals", ["xlsx"]],
   ["states", "States", ["json", "gz"]],
