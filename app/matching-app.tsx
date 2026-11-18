@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import {
   REMARKS,
   buildDecision,
@@ -13,65 +13,48 @@ import {
   type Remark,
   type Sheet,
 } from "@/lib/items";
-import { readWorkbook, writeWorkbook } from "@/lib/excel";
+import { writeWorkbook } from "@/lib/excel";
 
-const STORAGE_KEY = "matching-monkey:workbook:v1";
 const PAGE_SIZE = 100;
 
-type Saved = { fileName: string; sheets: Sheet[] };
+export type SaveStatus = "saved" | "saving" | "error" | "conflict";
 
-export default function MatchingApp() {
-  const [data, setData] = useState<Saved | null>(null);
+export type MatchingAppProps = {
+  fileName: string;
+  sheets: Sheet[];
+  onChange: (sheets: Sheet[]) => void;
+  saveStatus: SaveStatus;
+  saveMessage?: string;
+  onDownloadOriginal: () => void;
+};
+
+export default function MatchingApp({
+  fileName,
+  sheets,
+  onChange,
+  saveStatus,
+  saveMessage,
+  onDownloadOriginal,
+}: MatchingAppProps) {
   const [tab, setTab] = useState("Dashboard");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Restore last session (browser only; ignore storage failures).
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      if (raw) setData(JSON.parse(raw) as Saved);
-    } catch {}
-  }, []);
-  useEffect(() => {
-    if (!data) return;
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    } catch {}
-  }, [data]);
-
-  const sheets = useMemo(() => data?.sheets ?? [], [data]);
   const items = useMemo(() => toItems(sheets), [sheets]);
   const decision = useMemo(() => buildDecision(items), [items]);
   const newItems = useMemo(() => buildNewItems(items), [items]);
   const duplicates = useMemo(() => buildDuplicates(items), [items]);
   const totals = useMemo(() => buildGroupTotals(sheets), [sheets]);
 
-  async function onUpload(file: File) {
+  async function onDownload() {
     setBusy(true);
     setError(null);
     try {
-      const parsed = await readWorkbook(file);
-      if (!parsed.length) throw new Error("No sheets with data were found in this file.");
-      setData({ fileName: file.name, sheets: parsed });
-      setTab("Dashboard");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onDownload() {
-    if (!data) return;
-    setBusy(true);
-    try {
-      const blob = await writeWorkbook(data.sheets);
+      const blob = await writeWorkbook(sheets);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = data.fileName.replace(/\.xlsx?$/i, "") + " - matched.xlsx";
+      a.download = fileName.replace(/\.xlsx?$/i, "") + " - matched.xlsx";
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -82,19 +65,15 @@ export default function MatchingApp() {
   }
 
   const updateSheet = (name: string, fn: (s: Sheet) => Sheet) =>
-    setData((d) => d && { ...d, sheets: d.sheets.map((s) => (s.name === name ? fn(s) : s)) });
+    onChange(sheets.map((s) => (s.name === name ? fn(s) : s)));
 
   const setRemark = (id: string, remarks: Remark) =>
-    setData(
-      (d) =>
-        d && {
-          ...d,
-          sheets: d.sheets.map((s) =>
-            s.rows.some((r) => r.id === id)
-              ? { ...s, rows: s.rows.map((r) => (r.id === id ? { ...r, remarks } : r)) }
-              : s,
-          ),
-        },
+    onChange(
+      sheets.map((s) =>
+        s.rows.some((r) => r.id === id)
+          ? { ...s, rows: s.rows.map((r) => (r.id === id ? { ...r, remarks } : r)) }
+          : s,
+      ),
     );
 
   const tabs = ["Dashboard", ...sheets.map((s) => s.name), "Decision", "New Items", "Duplication"];
@@ -110,34 +89,30 @@ export default function MatchingApp() {
     <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">Item Matching</h1>
-          <p className="text-sm text-muted">
-            {data ? data.fileName : "Upload an Excel workbook with one sheet per bus group."}
-          </p>
+          <h1 className="text-xl font-semibold">{fileName}</h1>
+          <SaveIndicator status={saveStatus} message={saveMessage} />
         </div>
         <div className="flex flex-wrap gap-2">
-          <label className="btn cursor-pointer">
-            {data ? "Upload another file" : "Upload Excel"}
-            <input
-              type="file"
-              accept=".xlsx"
-              className="sr-only"
-              disabled={busy}
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) void onUpload(f);
-                e.target.value = "";
-              }}
-            />
-          </label>
-          {data && (
-            <button className="btn btn-primary" disabled={busy} onClick={onDownload}>
-              Download .xlsx
-            </button>
-          )}
+          <button className="btn" onClick={onDownloadOriginal}>
+            Download original
+          </button>
+          <button className="btn btn-primary" disabled={busy} onClick={onDownload}>
+            Download .xlsx
+          </button>
         </div>
       </header>
 
+      {saveStatus === "conflict" && (
+        <div
+          role="alert"
+          className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200"
+        >
+          <span>{saveMessage}</span>
+          <button className="btn" onClick={() => window.location.reload()}>
+            Reload
+          </button>
+        </div>
+      )}
       {busy && <p className="mt-4 text-sm text-muted">Working…</p>}
       {error && (
         <p role="alert" className="mt-4 rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200">
@@ -145,85 +120,100 @@ export default function MatchingApp() {
         </p>
       )}
 
-      {data && (
-        <>
-          <nav className="mt-6 flex gap-1 overflow-x-auto border-b border-line" aria-label="Sheets">
-            {tabs.map((t) => (
-              <button
-                key={t}
-                onClick={() => setTab(t)}
-                aria-current={tab === t ? "page" : undefined}
-                className={`-mb-px whitespace-nowrap border-b-2 px-3 py-2 text-sm ${
-                  tab === t ? "border-accent font-medium" : "border-transparent text-muted hover:text-foreground"
-                }`}
-              >
-                {t}
-                {t in counts && <span className="ml-1.5 text-xs text-muted">{counts[t]}</span>}
-              </button>
-            ))}
-          </nav>
+      <nav className="mt-6 flex gap-1 overflow-x-auto border-b border-line" aria-label="Sheets">
+        {tabs.map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            aria-current={tab === t ? "page" : undefined}
+            className={`-mb-px whitespace-nowrap border-b-2 px-3 py-2 text-sm ${
+              tab === t ? "border-accent font-medium" : "border-transparent text-muted hover:text-foreground"
+            }`}
+          >
+            {t}
+            {t in counts && <span className="ml-1.5 text-xs text-muted">{counts[t]}</span>}
+          </button>
+        ))}
+      </nav>
 
-          <div className="mt-5">
-            {tab === "Dashboard" && (
-              <Dashboard
-                totals={totals}
-                items={items}
-                decisionCount={decision.length}
-                newCount={newItems.length}
-                dupCount={counts.Duplication}
-                setRemark={setRemark}
-              />
-            )}
-            {activeSheet && (
-              <GroupSheet key={activeSheet.name} sheet={activeSheet} update={updateSheet} setRemark={setRemark} />
-            )}
-            {tab === "Decision" && (
-              <>
-                <Note>
-                  Each item code appears once across all bus groups. Rows marked <b>inactive</b> are left out.
-                </Note>
-                <Table
-                  headers={["Item Code", "Item Name", "Brand", "Bus Groups", "Occurrences"]}
-                  rows={decision.map((d) => ({
-                    key: d.code,
-                    cells: [d.code, d.name, d.brand, d.groups.join(", "), d.count],
-                  }))}
-                />
-              </>
-            )}
-            {tab === "New Items" && (
-              <>
-                <Note>
-                  Items whose Remarks is <b>active</b>.
-                </Note>
-                <Table
-                  headers={["Bus Group", "Item Code", "Item Name", "Brand", "Remarks"]}
-                  rows={newItems.map((it) => ({
-                    key: it.id,
-                    cells: [it.group, it.code, it.name, it.brand, <RemarkSelect key="r" value={it.remarks} onChange={(v) => setRemark(it.id, v)} />],
-                  }))}
-                />
-              </>
-            )}
-            {tab === "Duplication" && (
-              <>
-                <Note>
-                  Items with the same item code, or the same item name in any word order, across all bus groups and
-                  brands. Rows with the same Duplicate # belong together.
-                </Note>
-                <Table
-                  headers={["Duplicate #", "Matched On", "Bus Group", "Item Code", "Item Name", "Brand", "Remarks"]}
-                  rows={duplicates.map((d) => ({
-                    key: d.id,
-                    cells: [d.dupId, d.matchOn, d.group, d.code, d.name, d.brand, <RemarkSelect key="r" value={d.remarks} onChange={(v) => setRemark(d.id, v)} />],
-                  }))}
-                />
-              </>
-            )}
-          </div>
-        </>
-      )}
+      <div className="mt-5">
+        {tab === "Dashboard" && (
+          <Dashboard
+            totals={totals}
+            items={items}
+            decisionCount={decision.length}
+            newCount={newItems.length}
+            dupCount={counts.Duplication}
+            setRemark={setRemark}
+          />
+        )}
+        {activeSheet && (
+          <GroupSheet key={activeSheet.name} sheet={activeSheet} update={updateSheet} setRemark={setRemark} />
+        )}
+        {tab === "Decision" && (
+          <>
+            <Note>
+              Each item code appears once across all bus groups. Rows marked <b>inactive</b> are left out.
+            </Note>
+            <Table
+              headers={["Item Code", "Item Name", "Brand", "Bus Groups", "Occurrences"]}
+              rows={decision.map((d) => ({
+                key: d.code,
+                cells: [d.code, d.name, d.brand, d.groups.join(", "), d.count],
+              }))}
+            />
+          </>
+        )}
+        {tab === "New Items" && (
+          <>
+            <Note>
+              Items whose Remarks is <b>active</b>.
+            </Note>
+            <Table
+              headers={["Bus Group", "Item Code", "Item Name", "Brand", "Remarks"]}
+              rows={newItems.map((it) => ({
+                key: it.id,
+                cells: [it.group, it.code, it.name, it.brand, <RemarkSelect key="r" value={it.remarks} onChange={(v) => setRemark(it.id, v)} />],
+              }))}
+            />
+          </>
+        )}
+        {tab === "Duplication" && (
+          <>
+            <Note>
+              Items with the same item code, or the same item name in any word order, across all bus groups and
+              brands. Rows with the same Duplicate # belong together.
+            </Note>
+            <Table
+              headers={["Duplicate #", "Matched On", "Bus Group", "Item Code", "Item Name", "Brand", "Remarks"]}
+              rows={duplicates.map((d) => ({
+                key: d.id,
+                cells: [d.dupId, d.matchOn, d.group, d.code, d.name, d.brand, <RemarkSelect key="r" value={d.remarks} onChange={(v) => setRemark(d.id, v)} />],
+              }))}
+            />
+          </>
+        )}
+      </div>
     </div>
+  );
+}
+
+const SAVE_LABEL: Record<SaveStatus, string> = {
+  saving: "Saving…",
+  saved: "Saved",
+  error: "Couldn't save — retrying",
+  conflict: "Not saved",
+};
+
+function SaveIndicator({ status, message }: { status: SaveStatus; message?: string }) {
+  return (
+    <p
+      role="status"
+      className={`text-sm ${status === "error" || status === "conflict" ? "text-red-700 dark:text-red-400" : "text-muted"}`}
+    >
+      {SAVE_LABEL[status]}
+      {status === "error" && message ? ` — ${message}` : null}
+    </p>
   );
 }
 

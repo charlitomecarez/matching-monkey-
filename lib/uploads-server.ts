@@ -1,9 +1,9 @@
 import "server-only";
 import { unstable_rethrow } from "next/navigation";
-import { AppwriteException, Permission, Role, type Models, type Storage, type TablesDB } from "node-appwrite";
+import { AppwriteException, Permission, Query, Role, type Models, type Storage, type TablesDB } from "node-appwrite";
 import { IDS } from "./appwrite/config";
 import { AuthError } from "./auth";
-import { NotFound, ValidationError, assertOwner, grantsRead } from "./uploads";
+import { NotFound, ValidationError, assertOwner, grantsRead, toUploadMeta, type UploadMeta } from "./uploads";
 
 export type UploadRow = Models.Row & {
   ownerId: string;
@@ -42,6 +42,22 @@ export async function readJson(request: Request): Promise<unknown> {
     return await request.json();
   } catch {
     throw new ValidationError("Expected a JSON body.");
+  }
+}
+
+const LIST_PAGE = 100;
+
+/** All of a user's uploads, newest first. */
+export async function listUploadsFor(tables: TablesDB, userId: string): Promise<UploadMeta[]> {
+  const out: UploadMeta[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const queries = [Query.equal("ownerId", userId), Query.orderDesc("$createdAt"), Query.limit(LIST_PAGE)];
+    if (cursor) queries.push(Query.cursorAfter(cursor));
+    const { rows } = await tables.listRows<UploadRow>({ databaseId: IDS.database, tableId: IDS.uploads, queries });
+    out.push(...rows.map(toUploadMeta));
+    if (rows.length < LIST_PAGE) return out;
+    cursor = rows[rows.length - 1].$id;
   }
 }
 

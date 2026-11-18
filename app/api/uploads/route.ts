@@ -1,27 +1,16 @@
-import { AppwriteException, Query } from "node-appwrite";
+import { AppwriteException } from "node-appwrite";
 import { createAdminClient } from "@/lib/appwrite/server";
 import { IDS } from "@/lib/appwrite/config";
 import { requireMember } from "@/lib/auth";
-import { parseCreateBody, toUploadMeta, type UploadMeta } from "@/lib/uploads";
-import { claimFile, handle, ownerPermissions, readJson, type UploadRow } from "@/lib/uploads-server";
-
-const PAGE = 100;
+import { parseCreateBody, toUploadMeta } from "@/lib/uploads";
+import { claimFile, handle, listUploadsFor, ownerPermissions, readJson, type UploadRow } from "@/lib/uploads-server";
 
 /** The caller's uploads, newest first. */
 export async function GET() {
   return handle(async () => {
     const user = await requireMember();
     const { tables } = createAdminClient();
-    const out: UploadMeta[] = [];
-    let cursor: string | undefined;
-    for (;;) {
-      const queries = [Query.equal("ownerId", user.id), Query.orderDesc("$createdAt"), Query.limit(PAGE)];
-      if (cursor) queries.push(Query.cursorAfter(cursor));
-      const { rows } = await tables.listRows<UploadRow>({ databaseId: IDS.database, tableId: IDS.uploads, queries });
-      out.push(...rows.map(toUploadMeta));
-      if (rows.length < PAGE) return Response.json(out);
-      cursor = rows[rows.length - 1].$id;
-    }
+    return Response.json(await listUploadsFor(tables, user.id), { headers: { "Cache-Control": "no-store" } });
   });
 }
 
