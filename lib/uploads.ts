@@ -46,33 +46,32 @@ export function decideCommit(
   return { ok: false, deleteFileId: newStateFileId };
 }
 
+/** Client-generated upload/row id (ID.unique() is 20 chars); leaves room for the ".v<n>" suffix. */
+export const UPLOAD_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,19}$/;
+
 /**
- * An Appwrite error from the atomic version bump that means "someone else saved first":
- * 400 = incrementRowColumn's `max` was exceeded, 409 = the transaction lost a write conflict.
- * Duck-typed on `code` so this module stays SDK-free.
+ * Storage file id of an upload's state at a given version. File ids are unique per bucket, so
+ * only one save can create the file for version n + 1 — that uniqueness is the commit gate.
  */
-export function isConflictError(e: unknown): boolean {
-  if (typeof e !== "object" || e === null) return false;
-  const code = (e as { code?: unknown }).code;
-  return code === 400 || code === 409;
+export function stateFileIdFor(uploadId: string, version: number): string {
+  return `${uploadId}.v${version}`;
 }
 
 /**
- * Sanity check on the row returned by the staged increment. It may echo the bumped value
- * (base + 1) or the untouched row (base) depending on how staging reports it; anything else
- * means the stored version already moved past baseVersion.
+ * Pre-checks for a commit. Throws ValidationError (nothing is deleted) when the new file is not
+ * named for baseVersion + 1 or is already the live state file; otherwise the version decision.
  */
-export function stagedVersionOk(stagedVersion: number, baseVersion: number): boolean {
-  return stagedVersion === baseVersion || stagedVersion === baseVersion + 1;
-}
-
-/** After commit: the row must hold exactly our bump and our state file. */
-export function committedCleanly(
-  row: { version: number; stateFileId: string },
+export function planCommit(
+  current: { version: number; stateFileId: string },
+  uploadId: string,
   baseVersion: number,
   newStateFileId: string,
-): boolean {
-  return row.version === baseVersion + 1 && row.stateFileId === newStateFileId;
+): ReturnType<typeof decideCommit> {
+  if (newStateFileId !== stateFileIdFor(uploadId, baseVersion + 1)) {
+    throw new ValidationError("stateFileId must be named for baseVersion + 1.");
+  }
+  if (newStateFileId === current.stateFileId) throw new ValidationError("stateFileId is already the current state.");
+  return decideCommit(current, baseVersion, newStateFileId);
 }
 
 /** True when an Appwrite permission list grants the user read access directly. */
@@ -134,6 +133,7 @@ function name(o: Record<string, unknown>): string {
 }
 
 export type CreateUploadBody = {
+  id: string;
   name: string;
   originalFileId: string;
   stateFileId: string;
@@ -143,10 +143,17 @@ export type CreateUploadBody = {
 
 export function parseCreateBody(body: unknown): CreateUploadBody {
   const o = asObject(body);
+  const id = o.id;
+  if (typeof id !== "string" || !UPLOAD_ID_RE.test(id)) {
+    throw new ValidationError("id must be 1-20 characters of a-z, A-Z, 0-9, . - _ and start with a letter or digit.");
+  }
+  const stateFileId = str(o, "stateFileId");
+  if (stateFileId !== stateFileIdFor(id, 1)) throw new ValidationError("stateFileId must be named for version 1.");
   return {
+    id,
     name: name(o),
     originalFileId: str(o, "originalFileId"),
-    stateFileId: str(o, "stateFileId"),
+    stateFileId,
     rowCount: count(o, "rowCount"),
     sheetCount: count(o, "sheetCount"),
   };

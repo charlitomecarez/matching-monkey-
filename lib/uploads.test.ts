@@ -3,10 +3,9 @@ import {
   NotFound,
   ValidationError,
   assertOwner,
-  committedCleanly,
   decideCommit,
-  isConflictError,
-  stagedVersionOk,
+  planCommit,
+  stateFileIdFor,
   grantsRead,
   parseCommitBody,
   parseCreateBody,
@@ -51,7 +50,7 @@ describe("grantsRead", () => {
 });
 
 describe("parseCreateBody", () => {
-  const good = { name: "a.xlsx", originalFileId: "o1", stateFileId: "s1", rowCount: 10, sheetCount: 2 };
+  const good = { id: "abc123", name: "a.xlsx", originalFileId: "o1", stateFileId: "abc123.v1", rowCount: 10, sheetCount: 2 };
 
   it("accepts a valid body and ignores extra fields", () => {
     expect(parseCreateBody({ ...good, ownerId: "evil", version: 9 })).toEqual(good);
@@ -65,8 +64,19 @@ describe("parseCreateBody", () => {
     ["fractional count", { ...good, sheetCount: 1.5 }],
     ["string count", { ...good, rowCount: "10" }],
     ["not an object", null],
+    ["missing id", { ...good, id: undefined }],
+    ["id starting with a special char", { ...good, id: "_abc", stateFileId: "_abc.v1" }],
+    ["id with a bad char", { ...good, id: "ab/c", stateFileId: "ab/c.v1" }],
+    ["id longer than 20", { ...good, id: "a".repeat(21), stateFileId: `${"a".repeat(21)}.v1` }],
+    ["state file not named for version 1", { ...good, stateFileId: "abc123.v2" }],
+    ["state file for another upload", { ...good, stateFileId: "other.v1" }],
   ])("rejects %s", (_label, body) => {
     expect(() => parseCreateBody(body)).toThrow(ValidationError);
+  });
+
+  it("accepts a 20-char id with . - _", () => {
+    const id = "a1.b-c_d" + "x".repeat(12);
+    expect(parseCreateBody({ ...good, id, stateFileId: `${id}.v1` }).id).toBe(id);
   });
 
   it("trims the name", () => {
@@ -123,42 +133,41 @@ describe("toUploadMeta", () => {
   });
 });
 
-describe("isConflictError", () => {
-  it("treats a max-exceeded (400) or transaction conflict (409) as a conflict", () => {
-    expect(isConflictError({ code: 400, type: "row_column_limit_exceeded" })).toBe(true);
-    expect(isConflictError({ code: 409 })).toBe(true);
+
+describe("stateFileIdFor", () => {
+  const APPWRITE_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,35}$/;
+
+  it("names the state file after the upload and version", () => {
+    expect(stateFileIdFor("abc", 1)).toBe("abc.v1");
+    expect(stateFileIdFor("abc", 42)).toBe("abc.v42");
   });
 
-  it("does not treat other failures as a conflict", () => {
-    expect(isConflictError({ code: 404 })).toBe(false);
-    expect(isConflictError({ code: 500 })).toBe(false);
-    expect(isConflictError(new Error("network"))).toBe(false);
-    expect(isConflictError(null)).toBe(false);
-  });
-});
-
-describe("stagedVersionOk", () => {
-  it("accepts the bumped value or the untouched base value", () => {
-    expect(stagedVersionOk(4, 3)).toBe(true);
-    expect(stagedVersionOk(3, 3)).toBe(true);
-  });
-
-  it("rejects a value past the bump (someone else saved first)", () => {
-    expect(stagedVersionOk(5, 3)).toBe(false);
-  });
-
-  it("rejects a value below the base", () => {
-    expect(stagedVersionOk(2, 3)).toBe(false);
+  it("is a valid Appwrite file ID for a 20-char upload id and a large version", () => {
+    const id = stateFileIdFor("a".repeat(20), 999_999_999);
+    expect(id).toMatch(APPWRITE_ID);
+    expect(id.length).toBeLessThanOrEqual(36);
   });
 });
 
-describe("committedCleanly", () => {
-  it("is true when the row holds exactly our version and file", () => {
-    expect(committedCleanly({ version: 4, stateFileId: "new" }, 3, "new")).toBe(true);
+describe("planCommit", () => {
+  const current = { version: 3, stateFileId: "up1.v3" };
+
+  it("accepts the expected next file on the current version", () => {
+    expect(planCommit(current, "up1", 3, "up1.v4")).toEqual({ ok: true, nextVersion: 4, deleteFileId: "up1.v3" });
   });
 
-  it("is false when the version moved further or the pointer differs", () => {
-    expect(committedCleanly({ version: 5, stateFileId: "new" }, 3, "new")).toBe(false);
-    expect(committedCleanly({ version: 4, stateFileId: "other" }, 3, "new")).toBe(false);
+  it("rejects a file not named for baseVersion + 1 as a validation error", () => {
+    expect(() => planCommit(current, "up1", 3, "up1.v5")).toThrow(ValidationError);
+    expect(() => planCommit(current, "up1", 3, "other.v4")).toThrow(ValidationError);
+    expect(() => planCommit(current, "up1", 3, "up1.v3")).toThrow(ValidationError);
+  });
+
+  it("refuses a stale base and deletes the new file", () => {
+    // v2 was deleted when v3 was committed, so a tab still on v1 can recreate it.
+    expect(planCommit(current, "up1", 1, "up1.v2")).toEqual({ ok: false, deleteFileId: "up1.v2" });
+  });
+
+  it("never deletes the live file when a stale save names it", () => {
+    expect(() => planCommit({ version: 4, stateFileId: "up1.v4" }, "up1", 3, "up1.v4")).toThrow(ValidationError);
   });
 });

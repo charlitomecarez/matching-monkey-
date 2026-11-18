@@ -21,7 +21,7 @@ export function ownerPermissions(userId: string): string[] {
   return [Permission.read(role), Permission.update(role), Permission.delete(role)];
 }
 
-export const isNotFound = (e: unknown): boolean => e instanceof AppwriteException && e.code === 404;
+const isNotFound = (e: unknown): boolean => e instanceof AppwriteException && e.code === 404;
 
 /** Runs a route body and maps known errors to JSON responses. */
 export async function handle(fn: () => Promise<Response>): Promise<Response> {

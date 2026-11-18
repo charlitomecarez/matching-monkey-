@@ -1,4 +1,4 @@
-import { ID, Query } from "node-appwrite";
+import { AppwriteException, Query } from "node-appwrite";
 import { createAdminClient } from "@/lib/appwrite/server";
 import { IDS } from "@/lib/appwrite/config";
 import { requireMember } from "@/lib/auth";
@@ -25,7 +25,10 @@ export async function GET() {
   });
 }
 
-/** Registers an upload whose files the browser already put in Storage. */
+/**
+ * Registers an upload whose files the browser already put in Storage. The browser picks the row
+ * id (ID.unique()) so the first state file can be named stateFileIdFor(id, 1).
+ */
 export async function POST(request: Request) {
   return handle(async () => {
     const user = await requireMember();
@@ -35,13 +38,22 @@ export async function POST(request: Request) {
     await claimFile(storage, IDS.originals, body.originalFileId, user.id);
     await claimFile(storage, IDS.states, body.stateFileId, user.id);
 
-    const row = await tables.createRow<UploadRow>({
-      databaseId: IDS.database,
-      tableId: IDS.uploads,
-      rowId: ID.unique(),
-      data: { ...body, ownerId: user.id, version: 1 },
-      permissions: ownerPermissions(user.id),
-    });
+    const { id, ...data } = body;
+    let row: UploadRow;
+    try {
+      row = await tables.createRow<UploadRow>({
+        databaseId: IDS.database,
+        tableId: IDS.uploads,
+        rowId: id,
+        data: { ...data, ownerId: user.id, version: 1 },
+        permissions: ownerPermissions(user.id),
+      });
+    } catch (e) {
+      if (e instanceof AppwriteException && e.code === 409) {
+        return Response.json({ error: "An upload with this id already exists." }, { status: 409 });
+      }
+      throw e;
+    }
     return Response.json(toUploadMeta(row), { status: 201 });
   });
 }
