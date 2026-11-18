@@ -5,19 +5,11 @@ import { AppwriteException, Query } from "node-appwrite";
 import { createAdminClient, createSessionClient } from "@/lib/appwrite/server";
 import { APP_URL, IDS } from "@/lib/appwrite/config";
 import { AuthError, requireAdmin, type CurrentUser } from "@/lib/auth";
-import { checkAdminChange, type AdminChange } from "@/lib/admin-rules";
+import { checkAdminChange, mergeMembers, type AdminChange, type MemberRow } from "@/lib/admin-rules";
 import type { Membership } from "@/lib/access";
 
 export type ActionResult = { error: string | null };
 
-export type MemberRow = {
-  membershipId: string;
-  userId: string;
-  email: string;
-  name: string;
-  status: "joined" | "invited";
-  admin: boolean;
-};
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PAGE = 100;
@@ -75,17 +67,26 @@ async function checkChange(actor: CurrentUser, membershipId: string, change: Adm
   return { target, error: checkAdminChange(actor.id, target, all, change) };
 }
 
+/** All project users, paged with the API key. */
+async function allUsers() {
+  const { users } = createAdminClient();
+  const out = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const queries = [Query.limit(PAGE)];
+    if (cursor) queries.push(Query.cursorAfter(cursor));
+    const page = await users.list({ queries });
+    out.push(...page.users);
+    if (page.users.length < PAGE) return out;
+    cursor = page.users[page.users.length - 1].$id;
+  }
+}
+
+/** Team memberships plus project users without one ("no access": revoked or never invited). */
 export async function listMembers(): Promise<MemberRow[]> {
   await requireAdmin();
-  const memberships = await allMemberships();
-  return memberships.map((m) => ({
-    membershipId: m.$id,
-    userId: m.userId,
-    email: m.userEmail,
-    name: m.userName,
-    status: m.confirm ? "joined" : "invited",
-    admin: m.roles.includes("owner"),
-  }));
+  const [users, memberships] = await Promise.all([allUsers(), allMemberships()]);
+  return mergeMembers(users, memberships);
 }
 
 export async function inviteMember(_prev: ActionResult, formData: FormData): Promise<ActionResult> {

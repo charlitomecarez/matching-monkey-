@@ -1,7 +1,10 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { deleteUserAndData, revokeMember, setAdmin, type ActionResult, type MemberRow } from "./actions";
+import type { MemberRow } from "@/lib/admin-rules";
+import { deleteUserAndData, inviteMember, revokeMember, setAdmin, type ActionResult } from "./actions";
+
+const STATUS_LABEL: Record<MemberRow["status"], string> = { joined: "Joined", invited: "Invited", "no access": "No access" };
 
 export default function MembersTable({ members, currentUserId }: { members: MemberRow[]; currentUserId: string }) {
   if (members.length === 0) return <p className="text-sm text-muted">No members yet.</p>;
@@ -22,7 +25,7 @@ export default function MembersTable({ members, currentUserId }: { members: Memb
         </thead>
         <tbody>
           {members.map((m) => (
-            <MemberRowView key={m.membershipId} member={m} self={m.userId === currentUserId} />
+            <MemberRowView key={m.membershipId ?? `user-${m.userId}`} member={m} self={m.userId === currentUserId} />
           ))}
         </tbody>
       </table>
@@ -49,7 +52,14 @@ function MemberRowView({ member, self }: { member: MemberRow; self: boolean }) {
   };
 
   const matches = typed.trim().toLowerCase() === member.email.toLowerCase();
-  const confirmId = `confirm-${member.membershipId}`;
+  const confirmId = `confirm-${member.userId}`;
+  const membershipId = member.membershipId;
+
+  const reinvite = () => {
+    const fd = new FormData();
+    fd.set("email", member.email);
+    run(() => inviteMember({ error: null }, fd));
+  };
 
   return (
     <>
@@ -59,22 +69,30 @@ function MemberRowView({ member, self }: { member: MemberRow; self: boolean }) {
           {self && <span className="text-muted"> (you)</span>}
         </td>
         <td className="px-3 py-2">{member.name || <span className="text-muted">—</span>}</td>
-        <td className="px-3 py-2">{member.status === "joined" ? "Joined" : "Invited"}</td>
-        <td className="px-3 py-2">{member.admin ? "Admin" : "Member"}</td>
+        <td className="px-3 py-2">{STATUS_LABEL[member.status]}</td>
+        <td className="px-3 py-2">{membershipId === null ? <span className="text-muted">—</span> : member.admin ? "Admin" : "Member"}</td>
         <td className="px-3 py-2">
           {self ? null : (
             <div className="flex flex-wrap justify-end gap-2">
-              <button
-                type="button"
-                className="btn"
-                disabled={pending}
-                onClick={() => run(() => setAdmin(member.membershipId, !member.admin))}
-              >
-                {member.admin ? "Remove admin" : "Make admin"}
-              </button>
-              <button type="button" className="btn" disabled={pending} onClick={() => run(() => revokeMember(member.membershipId))}>
-                Revoke
-              </button>
+              {membershipId === null ? (
+                <button type="button" className="btn" disabled={pending || !member.email} onClick={reinvite}>
+                  Re-invite
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={pending}
+                    onClick={() => run(() => setAdmin(membershipId, !member.admin))}
+                  >
+                    {member.admin ? "Remove admin" : "Make admin"}
+                  </button>
+                  <button type="button" className="btn" disabled={pending} onClick={() => run(() => revokeMember(membershipId))}>
+                    Revoke
+                  </button>
+                </>
+              )}
               <button
                 type="button"
                 className="btn text-red-700 dark:text-red-400"

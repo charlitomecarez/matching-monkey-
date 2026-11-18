@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkAdminChange } from "./admin-rules";
+import { checkAdminChange, mergeMembers } from "./admin-rules";
 import type { Membership } from "./access";
 
 const TEAM = "members";
@@ -56,5 +56,36 @@ describe("checkAdminChange", () => {
   it("allows revoking and deleting a regular member", () => {
     expect(checkAdminChange("admin1", member, [owner, member], "revoke")).toBeNull();
     expect(checkAdminChange("admin1", member, [owner, member], "delete")).toBeNull();
+  });
+});
+
+describe("mergeMembers", () => {
+  const users = [
+    { $id: "u1", email: "a@x.com", name: "A" },
+    { $id: "u2", email: "b@x.com", name: "B" },
+    { $id: "u3", email: "c@x.com", name: "" },
+  ];
+  const memberships = [
+    { $id: "m1", userId: "u1", userEmail: "a@x.com", userName: "A", roles: ["owner"], confirm: true },
+    { $id: "m2", userId: "u2", userEmail: "b@x.com", userName: "B", roles: [], confirm: false },
+  ];
+
+  it("marks joined, invited and no-access users", () => {
+    expect(mergeMembers(users, memberships)).toEqual([
+      { membershipId: "m1", userId: "u1", email: "a@x.com", name: "A", status: "joined", admin: true },
+      { membershipId: "m2", userId: "u2", email: "b@x.com", name: "B", status: "invited", admin: false },
+      { membershipId: null, userId: "u3", email: "c@x.com", name: "", status: "no access", admin: false },
+    ]);
+  });
+
+  it("keeps a membership whose user is missing from the user list", () => {
+    const rows = mergeMembers([], [memberships[1]]);
+    expect(rows).toEqual([
+      { membershipId: "m2", userId: "u2", email: "b@x.com", name: "B", status: "invited", admin: false },
+    ]);
+  });
+
+  it("never marks a no-access user as admin", () => {
+    expect(mergeMembers([users[2]], [])[0]).toMatchObject({ status: "no access", admin: false, membershipId: null });
   });
 });

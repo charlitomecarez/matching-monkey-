@@ -23,3 +23,46 @@ export function checkAdminChange(
   }
   return null;
 }
+
+export type MemberStatusLabel = "joined" | "invited" | "no access";
+
+export type MemberRow = {
+  /** null when the user has no membership in the team (never invited, or revoked). */
+  membershipId: string | null;
+  userId: string;
+  email: string;
+  name: string;
+  status: MemberStatusLabel;
+  admin: boolean;
+};
+
+export type UserInfo = { $id: string; email: string; name: string };
+export type TeamMembershipInfo = {
+  $id: string;
+  userId: string;
+  userEmail: string;
+  userName: string;
+  roles: string[];
+  confirm: boolean;
+};
+
+/**
+ * One row per team membership, then one "no access" row per project user without a membership
+ * (revoked or never invited), so admins can still permanently delete them.
+ */
+export function mergeMembers(users: UserInfo[], memberships: TeamMembershipInfo[]): MemberRow[] {
+  const rows: MemberRow[] = memberships.map((m) => ({
+    membershipId: m.$id,
+    userId: m.userId,
+    email: m.userEmail,
+    name: m.userName,
+    status: m.confirm ? "joined" : "invited",
+    admin: m.roles.includes("owner"),
+  }));
+  const inTeam = new Set(memberships.map((m) => m.userId));
+  for (const u of users) {
+    if (inTeam.has(u.$id)) continue;
+    rows.push({ membershipId: null, userId: u.$id, email: u.email, name: u.name, status: "no access", admin: false });
+  }
+  return rows;
+}
