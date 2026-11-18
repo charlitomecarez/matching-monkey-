@@ -45,8 +45,21 @@ const memberCreate = [Permission.create(Role.team(TEAM))];
 // does, with the API key, after checking membership and ownership.
 const TABLE_PERMISSIONS = [];
 
-/** Run `fn`; log created/existed. Treat HTTP 409 as "already exists". */
-async function ensure(label, fn) {
+/**
+ * Create a resource unless it already exists. `exists` (optional) looks it up first — needed on
+ * Appwrite Cloud's Free plan, which answers a duplicate create with 403 "plan limit reached"
+ * instead of 409 when the resource count is already at the limit. A 409 still means "exists".
+ */
+async function ensure(label, fn, exists) {
+  if (exists) {
+    try {
+      await exists();
+      console.log(`existed  ${label}`);
+      return undefined;
+    } catch (err) {
+      if (err?.code !== 404) throw err;
+    }
+  }
   try {
     const result = await fn();
     console.log(`created  ${label}`);
@@ -81,6 +94,7 @@ async function waitForColumns(keys) {
 // Database + table
 await ensure(`database ${DB}`, () =>
   tables.create({ databaseId: DB, name: "Matching" }),
+  () => tables.get({ databaseId: DB }),
 );
 await ensure(`table ${TABLE}`, () =>
   tables.createTable({
@@ -90,6 +104,7 @@ await ensure(`table ${TABLE}`, () =>
     permissions: TABLE_PERMISSIONS,
     rowSecurity: true,
   }),
+  () => tables.getTable({ databaseId: DB, tableId: TABLE }),
 );
 // Also applied to an existing table (an earlier version of this script granted team create).
 await tables.updateTable({
@@ -117,6 +132,7 @@ for (const [key, size] of varchars) {
       size,
       required: true,
     }),
+    () => tables.getColumn({ databaseId: DB, tableId: TABLE, key }),
   );
 }
 for (const key of integers) {
@@ -127,6 +143,7 @@ for (const key of integers) {
       key,
       required: true,
     }),
+    () => tables.getColumn({ databaseId: DB, tableId: TABLE, key }),
   );
 }
 
@@ -139,6 +156,7 @@ await ensure("index ownerId_key", () =>
     type: TablesDBIndexType.Key,
     columns: ["ownerId"],
   }),
+  () => tables.getIndex({ databaseId: DB, tableId: TABLE, key: "ownerId_key" }),
 );
 
 // Buckets. If the console rejects MAX (the Free plan has a lower per-file limit), lower it here.
@@ -157,7 +175,11 @@ for (const [id, name, extensions] of [
     maximumFileSize: MAX,
     allowedFileExtensions: extensions,
   };
-  const created = await ensure(`bucket ${id}`, () => storage.createBucket(settings));
+  const created = await ensure(
+    `bucket ${id}`,
+    () => storage.createBucket(settings),
+    () => storage.getBucket({ bucketId: id }),
+  );
   if (!created) {
     // Existing bucket: bring its settings up to date (idempotent).
     await storage.updateBucket(settings);
@@ -168,6 +190,7 @@ for (const [id, name, extensions] of [
 // Team
 await ensure(`team ${TEAM}`, () =>
   teams.create({ teamId: TEAM, name: "Members" }),
+  () => teams.get({ teamId: TEAM }),
 );
 
 // Owner bootstrap
