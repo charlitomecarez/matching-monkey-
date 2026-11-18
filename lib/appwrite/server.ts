@@ -1,14 +1,14 @@
 import "server-only";
 import { Account, Client, Storage, TablesDB, Teams, Users } from "node-appwrite";
-import { ENDPOINT, PROJECT_ID } from "./config";
+import { appwriteEndpoint, appwriteProjectId, requireEnv } from "./config";
 
 function baseClient() {
-  return new Client().setEndpoint(ENDPOINT).setProject(PROJECT_ID);
+  return new Client().setEndpoint(appwriteEndpoint()).setProject(appwriteProjectId());
 }
 
 /** API-key client. Server-only; never expose to the browser. */
 export function createAdminClient() {
-  const client = baseClient().setKey(process.env.APPWRITE_API_KEY as string);
+  const client = baseClient().setKey(requireEnv("APPWRITE_API_KEY", process.env.APPWRITE_API_KEY));
   return {
     account: new Account(client),
     users: new Users(client),

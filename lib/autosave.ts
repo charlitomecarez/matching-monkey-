@@ -225,7 +225,14 @@ export const savers = new SaverRegistry();
 
 let guardInstalled = false;
 
-/** One beforeunload warning and one page-hide flush for every registered saver. Idempotent. */
+/**
+ * One beforeunload warning and one page-hide flush for every registered saver. Idempotent.
+ *
+ * The beforeunload prompt is the real guard against losing edits. The pagehide / hidden flush only
+ * *starts* a save early; the browser may kill the page before it finishes (the state file upload
+ * is a normal request; only the small commit/reclaim JSON calls use `keepalive`), so it is not a
+ * delivery guarantee.
+ */
 export function installUnloadGuard(registry: SaverRegistry = savers): void {
   if (guardInstalled || typeof window === "undefined") return;
   guardInstalled = true;

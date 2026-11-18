@@ -39,7 +39,11 @@ const users = new Users(client);
 const DB = "matching";
 const TABLE = "uploads";
 const TEAM = "members";
+// Buckets: members may create files (browser uploads); each file grants only its owner access.
 const memberCreate = [Permission.create(Role.team(TEAM))];
+// Table: no client permissions at all. The browser never reads or writes rows; the app server
+// does, with the API key, after checking membership and ownership.
+const TABLE_PERMISSIONS = [];
 
 /** Run `fn`; log created/existed. Treat HTTP 409 as "already exists". */
 async function ensure(label, fn) {
@@ -83,10 +87,19 @@ await ensure(`table ${TABLE}`, () =>
     databaseId: DB,
     tableId: TABLE,
     name: "Uploads",
-    permissions: memberCreate,
+    permissions: TABLE_PERMISSIONS,
     rowSecurity: true,
   }),
 );
+// Also applied to an existing table (an earlier version of this script granted team create).
+await tables.updateTable({
+  databaseId: DB,
+  tableId: TABLE,
+  name: "Uploads",
+  permissions: TABLE_PERMISSIONS,
+  rowSecurity: true,
+});
+console.log(`updated  table ${TABLE} permissions`);
 
 const varchars = [
   ["ownerId", 36],
@@ -128,22 +141,28 @@ await ensure("index ownerId_key", () =>
   }),
 );
 
-// Buckets
+// Buckets. If the console rejects MAX (the Free plan has a lower per-file limit), lower it here.
+// States are saved as gzip (`state.json.gz`; Appwrite checks the last extension, "gz"); "json" is
+// kept so older uncompressed state files stay valid.
 const MAX = 50 * 1024 * 1024;
-for (const [id, name, ext] of [
-  ["originals", "Originals", "xlsx"],
-  ["states", "States", "json"],
+for (const [id, name, extensions] of [
+  ["originals", "Originals", ["xlsx"]],
+  ["states", "States", ["json", "gz"]],
 ]) {
-  await ensure(`bucket ${id}`, () =>
-    storage.createBucket({
-      bucketId: id,
-      name,
-      permissions: memberCreate,
-      fileSecurity: true,
-      maximumFileSize: MAX,
-      allowedFileExtensions: [ext],
-    }),
-  );
+  const settings = {
+    bucketId: id,
+    name,
+    permissions: memberCreate,
+    fileSecurity: true,
+    maximumFileSize: MAX,
+    allowedFileExtensions: extensions,
+  };
+  const created = await ensure(`bucket ${id}`, () => storage.createBucket(settings));
+  if (!created) {
+    // Existing bucket: bring its settings up to date (idempotent).
+    await storage.updateBucket(settings);
+    console.log(`updated  bucket ${id}`);
+  }
 }
 
 // Team

@@ -1,18 +1,23 @@
 // Browser-side upload operations. Files go straight to Appwrite Storage with a short-lived JWT;
 // the app's API routes only receive ids and small metadata.
-import { AppwriteException, ID, Permission, Role, type Storage } from "appwrite";
+import { AppwriteException, Client, ID, Permission, Role, type Storage } from "appwrite";
 import { getBrowserStorage } from "./appwrite/browser";
-import { IDS, PROJECT_ID } from "./appwrite/config";
+import { IDS, appwriteProjectId } from "./appwrite/config";
 import { readWorkbook } from "./excel";
 import { nextSaveStep, type SaveOutcome, type SaveStep } from "./save-plan";
-import { parseState, serializeState, type WorkbookState } from "./state";
+import type { WorkbookState } from "./state";
+import { decodeState, encodeState } from "./state-codec";
 import { MAX_NAME, SAVE_IN_PROGRESS_MESSAGE, stateFileIdFor, type UploadMeta } from "./uploads";
+
+export { StateTooLargeError } from "./state-codec";
 
 /** A non-2xx answer from one of the app's API routes. */
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
     message: string,
+    /** Machine-readable reason from the body, e.g. a commit's "conflict" | "stale". */
+    public readonly code?: string,
   ) {
     super(message);
     this.name = "ApiError";
@@ -29,25 +34,35 @@ export class SaveBusyError extends Error {
 
 // ---- API routes ----
 
-async function api(path: string, init?: { method?: string; body?: unknown }): Promise<Response> {
+type ApiInit = {
+  method?: string;
+  body?: unknown;
+  /** Let a small JSON request finish if the page is closing (commit / reclaim only, never uploads). */
+  keepalive?: boolean;
+};
+
+async function api(path: string, init?: ApiInit): Promise<Response> {
   return fetch(path, {
     method: init?.method ?? "GET",
     headers: init?.body === undefined ? undefined : { "Content-Type": "application/json" },
     body: init?.body === undefined ? undefined : JSON.stringify(init.body),
     cache: "no-store",
+    keepalive: init?.keepalive,
   });
 }
 
 async function errorOf(res: Response): Promise<ApiError> {
   let message = `Request failed (${res.status}).`;
+  let code: string | undefined;
   try {
-    const data = (await res.json()) as { error?: unknown };
+    const data = (await res.json()) as { error?: unknown; code?: unknown };
     if (typeof data.error === "string") message = data.error;
+    if (typeof data.code === "string") code = data.code;
   } catch {}
-  return new ApiError(res.status, message);
+  return new ApiError(res.status, message, code);
 }
 
-async function apiJson<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
+async function apiJson<T>(path: string, init?: ApiInit): Promise<T> {
   const res = await api(path, init);
   if (!res.ok) throw await errorOf(res);
   return (await res.json()) as T;
@@ -55,6 +70,11 @@ async function apiJson<T>(path: string, init?: { method?: string; body?: unknown
 
 export function listUploads(): Promise<UploadMeta[]> {
   return apiJson<UploadMeta[]>("/api/uploads");
+}
+
+/** Fresh metadata of one upload (the page's server-rendered copy can be stale after back/forward). */
+export function getUpload(id: string): Promise<UploadMeta> {
+  return apiJson<UploadMeta>(`/api/uploads/${encodeURIComponent(id)}`);
 }
 
 export function renameUpload(id: string, name: string): Promise<UploadMeta> {
@@ -98,8 +118,13 @@ function ownerPermissions(userId: string): string[] {
   return [Permission.read(role), Permission.update(role), Permission.delete(role)];
 }
 
-function stateFile(state: WorkbookState): File {
-  return new File([serializeState(state)], "state.json", { type: "application/json" });
+/**
+ * The state as a gzip file kept below the SDK's chunk size (throws StateTooLargeError otherwise),
+ * so createFile is one request that fails with 409 on a taken id instead of resuming an upload.
+ */
+async function stateFile(state: WorkbookState): Promise<File> {
+  const blob = await encodeState(state, Client.CHUNK_SIZE);
+  return new File([blob], "state.json.gz", { type: "application/gzip" });
 }
 
 async function putFile(bucketId: string, fileId: string, file: File): Promise<void> {
@@ -114,7 +139,7 @@ async function fetchFile(bucketId: string, fileId: string): Promise<Response> {
     const { jwt } = await getJwt(force);
     const url = getBrowserStorage(jwt).getFileDownload({ bucketId, fileId });
     const res = await fetch(url, {
-      headers: { "X-Appwrite-JWT": jwt, "X-Appwrite-Project": PROJECT_ID },
+      headers: { "X-Appwrite-JWT": jwt, "X-Appwrite-Project": appwriteProjectId() },
       cache: "no-store",
     });
     if (res.ok) return res;
@@ -149,7 +174,7 @@ export async function createUpload(file: File): Promise<UploadMeta> {
   try {
     await putFile(IDS.originals, originalFileId, file);
     created.push([IDS.originals, originalFileId]);
-    await putFile(IDS.states, stateFileId, stateFile({ v: 1, fileName: file.name, sheets }));
+    await putFile(IDS.states, stateFileId, await stateFile({ v: 1, fileName: file.name, sheets }));
     created.push([IDS.states, stateFileId]);
   } catch (e) {
     await removeFiles(created);
@@ -183,7 +208,7 @@ async function removeFiles(files: [string, string][]): Promise<void> {
 
 export async function loadState(meta: UploadMeta): Promise<WorkbookState> {
   const res = await fetchFile(IDS.states, meta.stateFileId);
-  return parseState(await res.text());
+  return decodeState(new Uint8Array(await res.arrayBuffer())); // gzip, or an older plain JSON file
 }
 
 export async function downloadOriginal(meta: UploadMeta): Promise<void> {
@@ -201,8 +226,9 @@ const MAX_SAVE_STEPS = 12;
 /**
  * Saves `state` as version baseVersion + 1: create the state file (the id is the gate), then commit.
  * Resolves with the new version or a conflict message. Throws SaveBusyError when another save is
- * still in flight, and other errors for network / server failures (the caller retries; nothing is
- * committed in that case unless a later attempt finds it was).
+ * still in flight, StateTooLargeError when the state can't be stored, and other errors for
+ * network / server failures (the caller retries; nothing is committed in that case unless a later
+ * attempt finds it was). A commit refused as too slow is retried once from create.
  */
 export async function saveState(
   meta: UploadMeta,
@@ -211,7 +237,9 @@ export async function saveState(
 ): Promise<{ version: number } | { conflict: string }> {
   const fileId = stateFileIdFor(meta.id, baseVersion + 1);
   const base = `/api/uploads/${encodeURIComponent(meta.id)}`;
+  const file = await stateFile(state);
   let createdAt = 0;
+  let staleSeen = false;
   let lastError: unknown = null;
   let step: SaveStep = { kind: "create", retried: false };
 
@@ -227,7 +255,7 @@ export async function saveState(
         const retried = step.retried;
         const startedAt = Date.now(); // never later than the server's $createdAt
         try {
-          await putFile(IDS.states, fileId, stateFile(state));
+          await putFile(IDS.states, fileId, file);
           createdAt = startedAt;
           outcome = { step: "create", result: "ok", retried };
         } catch (e) {
@@ -242,7 +270,7 @@ export async function saveState(
 
       case "reclaim": {
         try {
-          const res = await api(`${base}/reclaim`, { method: "POST", body: { baseVersion } });
+          const res = await api(`${base}/reclaim`, { method: "POST", body: { baseVersion }, keepalive: true });
           if (res.ok) outcome = { step: "reclaim", result: "cleared" };
           else {
             const err = await errorOf(res);
@@ -262,12 +290,23 @@ export async function saveState(
 
       case "commit": {
         try {
-          const res = await api(`${base}/commit`, { method: "POST", body: { stateFileId: fileId, baseVersion } });
+          const res = await api(`${base}/commit`, {
+            method: "POST",
+            body: { stateFileId: fileId, baseVersion, size: file.size },
+            keepalive: true,
+          });
           if (res.ok) {
             const { version } = (await res.json()) as { version: number };
             outcome = { step: "commit", result: "ok", version };
           } else if (res.status === 409) {
-            outcome = { step: "commit", result: "conflict" };
+            const err = await errorOf(res);
+            if (err.code === "stale") {
+              lastError = err;
+              outcome = { step: "commit", result: "stale", retried: staleSeen };
+              staleSeen = true;
+            } else {
+              outcome = { step: "commit", result: "conflict" };
+            }
           } else {
             lastError = await errorOf(res);
             outcome = { step: "commit", result: "error" };

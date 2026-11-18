@@ -38,6 +38,14 @@ describe("nextSaveStep", () => {
     expect(nextSaveStep({ step: "commit", result: "conflict" })).toEqual(conflict);
   });
 
+  it("retries the save once from create when the commit says it was too slow", () => {
+    expect(nextSaveStep({ step: "commit", result: "stale", retried: false })).toEqual({ kind: "create", retried: false });
+  });
+
+  it("reports a second too-slow commit as an error (backoff), never a conflict", () => {
+    expect(nextSaveStep({ step: "commit", result: "stale", retried: true })).toEqual({ kind: "error" });
+  });
+
   it("checks the server after a commit that failed in transit", () => {
     expect(nextSaveStep({ step: "commit", result: "error" })).toEqual({ kind: "verify" });
   });

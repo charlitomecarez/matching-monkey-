@@ -17,6 +17,7 @@ import {
   parseCreateBody,
   parseRenameBody,
   toUploadMeta,
+  lastWriteOf,
 } from "./uploads";
 
 describe("decideCommit", () => {
@@ -102,12 +103,22 @@ describe("parseRenameBody", () => {
 });
 
 describe("parseCommitBody", () => {
-  it("accepts a state file id and base version", () => {
-    expect(parseCommitBody({ stateFileId: "s2", baseVersion: 1 })).toEqual({ stateFileId: "s2", baseVersion: 1 });
+  it("accepts a state file id, base version and size", () => {
+    expect(parseCommitBody({ stateFileId: "s2", baseVersion: 1, size: 123 })).toEqual({
+      stateFileId: "s2",
+      baseVersion: 1,
+      size: 123,
+    });
   });
 
   it("rejects a missing base version", () => {
-    expect(() => parseCommitBody({ stateFileId: "s2" })).toThrow(ValidationError);
+    expect(() => parseCommitBody({ stateFileId: "s2", size: 1 })).toThrow(ValidationError);
+  });
+
+  it("rejects a missing or invalid size", () => {
+    expect(() => parseCommitBody({ stateFileId: "s2", baseVersion: 1 })).toThrow(ValidationError);
+    expect(() => parseCommitBody({ stateFileId: "s2", baseVersion: 1, size: -1 })).toThrow(ValidationError);
+    expect(() => parseCommitBody({ stateFileId: "s2", baseVersion: 1, size: 1.5 })).toThrow(ValidationError);
   });
 });
 
@@ -227,5 +238,13 @@ describe("parseReclaimBody", () => {
     expect(parseReclaimBody({ baseVersion: 2 })).toEqual({ baseVersion: 2 });
     expect(() => parseReclaimBody({ baseVersion: -1 })).toThrow(ValidationError);
     expect(() => parseReclaimBody({})).toThrow(ValidationError);
+  });
+});
+
+describe("lastWriteOf", () => {
+  it("measures from $updatedAt (the last chunk), falling back to $createdAt", () => {
+    expect(lastWriteOf({ $createdAt: "c", $updatedAt: "u" })).toBe("u");
+    expect(lastWriteOf({ $createdAt: "c", $updatedAt: "" })).toBe("c");
+    expect(lastWriteOf({ $createdAt: "c" })).toBe("c");
   });
 });

@@ -3,7 +3,7 @@ import { createAdminClient } from "@/lib/appwrite/server";
 import { IDS } from "@/lib/appwrite/config";
 import { requireMember } from "@/lib/auth";
 import { parseCreateBody, toUploadMeta } from "@/lib/uploads";
-import { claimFile, handle, listUploadsFor, ownerPermissions, readJson, type UploadRow } from "@/lib/uploads-server";
+import { claimFile, handle, listUploadsFor, readJson, type UploadRow } from "@/lib/uploads-server";
 
 /** The caller's uploads, newest first. */
 export async function GET() {
@@ -35,7 +35,7 @@ export async function POST(request: Request) {
         tableId: IDS.uploads,
         rowId: id,
         data: { ...data, ownerId: user.id, version: 1 },
-        permissions: ownerPermissions(user.id),
+        permissions: [], // no client access: only the server (API key) reads or writes rows
       });
     } catch (e) {
       if (e instanceof AppwriteException && e.code === 409) {

@@ -3,6 +3,7 @@
 // A save from version V creates the state file stateFileIdFor(id, V + 1), then commits it. The
 // create is the gate: a taken id means another save (or an orphan) got there first, so reclaim is
 // tried once. A commit whose response is lost is checked against the server before anything else.
+// A commit refused as too slow ("stale") starts over once; a second one is reported as an error.
 import { CONFLICT_MESSAGE, COMMIT_MAX_AGE_MS } from "./uploads";
 
 /** Wait before retrying when another save from the same version is still in progress. */
@@ -16,6 +17,8 @@ export type SaveOutcome =
   | { step: "reclaim"; result: "cleared" | "busy" | "conflict" | "error" }
   | { step: "commit"; result: "ok"; version: number }
   | { step: "commit"; result: "conflict" | "error" }
+  /** stale = the commit was refused as too slow (the server deleted the file); retried = seen before */
+  | { step: "commit"; result: "stale"; retried: boolean }
   /** committed = the server's current state file is the one this save created */
   | { step: "verify"; result: "committed"; version: number }
   | { step: "verify"; result: "not-committed"; sinceCreateMs: number }
@@ -49,6 +52,8 @@ export function nextSaveStep(o: SaveOutcome): SaveStep {
     case "commit":
       if (o.result === "ok") return { kind: "done", version: o.version };
       if (o.result === "conflict") return conflict;
+      // Too slow is never a conflict: the server deleted the file, so create it again once.
+      if (o.result === "stale") return o.retried ? { kind: "error" } : { kind: "create", retried: false };
       return { kind: "verify" };
     case "verify":
       if (o.result === "committed") return { kind: "done", version: o.version };

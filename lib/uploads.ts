@@ -13,6 +13,11 @@ export type UploadMeta = {
 };
 
 export const CONFLICT_MESSAGE = "This upload was changed in another tab or device — reload to continue.";
+/** 409 body when a commit is refused because the file is older than COMMIT_MAX_AGE_MS. */
+export const STALE_MESSAGE = "Save took too long — retrying.";
+
+/** `code` in a commit route's 409 body: a real conflict, or a save that took too long. */
+export type CommitRefusal = "conflict" | "stale";
 export const MAX_NAME = 255;
 
 /** The resource doesn't exist or belongs to someone else (never reveal which). */
@@ -81,24 +86,32 @@ export function planCommit(
  * Because COMMIT_MAX_AGE_MS < RECLAIM_MIN_AGE_MS (both measured against the same clocks), a file
  * old enough to be reclaimed can never still be committed, so reclaiming never discards a save
  * that is about to succeed. The gap also absorbs a slow commit request.
+ *
+ * Ages are measured from the file's last write (lastWriteOf), not its creation: a chunked upload
+ * creates the file with its first chunk, and a slow upload must not look old the moment it ends.
  */
 export const COMMIT_MAX_AGE_MS = 60_000;
 export const RECLAIM_MIN_AGE_MS = 120_000;
 export const SAVE_IN_PROGRESS_MESSAGE = "Another save is still in progress — try again in a moment.";
 
-function ageMs(createdAt: string, now: number): number {
-  const t = Date.parse(createdAt);
+function ageMs(writtenAt: string, now: number): number {
+  const t = Date.parse(writtenAt);
   return Number.isNaN(t) ? Number.POSITIVE_INFINITY : now - t;
 }
 
-/** The new state file was created too long ago to be committed (unparseable = too old). */
-export function isTooOldToCommit(createdAt: string, now: number): boolean {
-  return ageMs(createdAt, now) > COMMIT_MAX_AGE_MS;
+/** When a Storage file was last written: $updatedAt, or $createdAt if that is missing. */
+export function lastWriteOf(file: { $createdAt: string; $updatedAt?: string }): string {
+  return file.$updatedAt || file.$createdAt;
+}
+
+/** The new state file was written too long ago to be committed (unparseable = too old). */
+export function isTooOldToCommit(writtenAt: string, now: number): boolean {
+  return ageMs(writtenAt, now) > COMMIT_MAX_AGE_MS;
 }
 
 /** The pending state file is old enough to be treated as an orphan and deleted. */
-export function canReclaim(createdAt: string, now: number): boolean {
-  return ageMs(createdAt, now) >= RECLAIM_MIN_AGE_MS;
+export function canReclaim(writtenAt: string, now: number): boolean {
+  return ageMs(writtenAt, now) >= RECLAIM_MIN_AGE_MS;
 }
 
 /** Which file a reclaim from baseVersion may clear; a moved version is a conflict. */
@@ -204,7 +217,8 @@ export function parseRenameBody(body: unknown): { name: string } {
   return { name: name(asObject(body)) };
 }
 
-export function parseCommitBody(body: unknown): { stateFileId: string; baseVersion: number } {
+/** `size` is the byte size of the state file the browser uploaded (checked against Storage). */
+export function parseCommitBody(body: unknown): { stateFileId: string; baseVersion: number; size: number } {
   const o = asObject(body);
-  return { stateFileId: str(o, "stateFileId"), baseVersion: count(o, "baseVersion") };
+  return { stateFileId: str(o, "stateFileId"), baseVersion: count(o, "baseVersion"), size: count(o, "size") };
 }

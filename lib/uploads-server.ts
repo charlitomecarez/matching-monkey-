@@ -15,7 +15,11 @@ export type UploadRow = Models.Row & {
   sheetCount: number;
 };
 
-/** Read/update/delete for the owner only. */
+/**
+ * File permissions: read/update/delete for the owner only. Rows get no permissions at all: the
+ * browser never touches the table; the server reads and writes it with the API key after
+ * requireMember() and an owner check.
+ */
 export function ownerPermissions(userId: string): string[] {
   const role = Role.user(userId);
   return [Permission.read(role), Permission.update(role), Permission.delete(role)];
@@ -76,7 +80,8 @@ export async function getOwnedRow(tables: TablesDB, rowId: string, userId: strin
 
 /**
  * Checks the file exists and the caller can already read it (so nobody can claim another
- * user's file ID), then pins its permissions to the caller alone.
+ * user's file ID), then pins its permissions to the caller alone. Returns the file as it was
+ * before that update, so its timestamps still describe the upload (updateFile bumps $updatedAt).
  */
 export async function claimFile(
   storage: Storage,
@@ -92,17 +97,55 @@ export async function claimFile(
     throw e;
   }
   if (!grantsRead(file.$permissions, userId)) throw new ValidationError("File not found.");
-  return storage.updateFile({ bucketId, fileId, permissions: ownerPermissions(userId) });
+  await storage.updateFile({ bucketId, fileId, permissions: ownerPermissions(userId) });
+  return file;
 }
 
 /**
- * Best-effort cleanup after the row change has already happened: "already gone" is success,
- * other failures are logged (an orphaned file) rather than failing the request.
+ * Deletes a file with the API key only if it belongs to `ownerId` (grants them read directly).
+ * Defence in depth: a file id that came from a row must not let the server delete someone
+ * else's file. A missing file counts as deleted; a foreign file is skipped and logged.
+ * Returns true when the file is gone afterwards.
  */
-export async function deleteFileQuietly(storage: Storage, bucketId: string, fileId: string): Promise<void> {
+export async function deleteOwnedFile(
+  storage: Storage,
+  bucketId: string,
+  fileId: string,
+  ownerId: string,
+): Promise<boolean> {
+  let file: Models.File;
+  try {
+    file = await storage.getFile({ bucketId, fileId });
+  } catch (e) {
+    if (isNotFound(e)) return true;
+    throw e;
+  }
+  if (!grantsRead(file.$permissions, ownerId)) {
+    console.warn(`Not deleting ${bucketId}/${fileId}: it does not belong to user ${ownerId}.`);
+    return false;
+  }
   try {
     await storage.deleteFile({ bucketId, fileId });
   } catch (e) {
-    if (!isNotFound(e)) console.error(`Could not delete ${bucketId}/${fileId}`, e);
+    if (!isNotFound(e)) throw e;
+  }
+  return true;
+}
+
+/**
+ * Best-effort cleanup after the row change has already happened: only the owner's file is
+ * deleted (see deleteOwnedFile), "already gone" is success, and other failures are logged (an
+ * orphaned file) rather than failing the request.
+ */
+export async function deleteFileQuietly(
+  storage: Storage,
+  bucketId: string,
+  fileId: string,
+  ownerId: string,
+): Promise<void> {
+  try {
+    await deleteOwnedFile(storage, bucketId, fileId, ownerId);
+  } catch (e) {
+    console.error(`Could not delete ${bucketId}/${fileId}`, e);
   }
 }

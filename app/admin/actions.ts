@@ -7,12 +7,15 @@ import { APP_URL, IDS } from "@/lib/appwrite/config";
 import { AuthError, requireAdmin, type CurrentUser } from "@/lib/auth";
 import { checkAdminChange, mergeMembers, type AdminChange, type MemberRow } from "@/lib/admin-rules";
 import type { Membership } from "@/lib/access";
+import { deleteOwnedFile, type UploadRow } from "@/lib/uploads-server";
 
 export type ActionResult = { error: string | null };
 
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PAGE = 100;
+/** Upper bound on delete passes over a user's uploads (PAGE rows each). */
+const MAX_DELETE_PASSES = 1000;
 
 type Guarded = { user: CurrentUser; error: null } | { user: null; error: string };
 
@@ -112,7 +115,12 @@ export async function inviteMember(_prev: ActionResult, formData: FormData): Pro
   return { error: null };
 }
 
-/** Removes access. The user's data is kept; re-inviting the same email restores it. */
+/**
+ * Removes access. The user's data is kept; re-inviting the same email restores it.
+ * The account is also blocked (status false): files and rows grant the user direct Appwrite access,
+ * and their password would otherwise still work against Appwrite itself. Accepting a new invite
+ * unblocks it (app/invite/actions.ts).
+ */
 export async function revokeMember(membershipId: string): Promise<ActionResult> {
   const { user, error } = await guard();
   if (!user) return { error };
@@ -124,6 +132,9 @@ export async function revokeMember(membershipId: string): Promise<ActionResult> 
     await teams.deleteMembership({ teamId: IDS.team, membershipId });
     await users.deleteSessions({ userId: check.target.userId }).catch((e) => {
       if (!isNotFound(e)) throw e; // An invited user may have no account yet.
+    });
+    await users.updateStatus({ userId: check.target.userId, status: false }).catch((e) => {
+      if (!isNotFound(e)) throw e;
     });
   } catch (e) {
     return { error: appwriteMessage(e, "Could not revoke access. Try again.") };
@@ -182,29 +193,42 @@ export async function deleteUserAndData(userId: string, confirmEmail: string): P
       return { error: "The email you typed does not match this user." };
     }
 
-    // Delete rows page by page; always re-read the first page since deleted rows drop out.
-    for (;;) {
-      const { rows } = await tables.listRows({
+    // Delete rows page by page; always re-read the first page since deleted rows drop out. Stop
+    // when a pass deletes nothing (stale listing) and after MAX_DELETE_PASSES, so this can't spin.
+    let done = false;
+    for (let pass = 0; pass < MAX_DELETE_PASSES && !done; pass++) {
+      const { rows } = await tables.listRows<UploadRow>({
         databaseId: IDS.database,
         tableId: IDS.uploads,
         queries: [Query.equal("ownerId", userId), Query.limit(PAGE)],
       });
+      if (rows.length === 0) {
+        done = true;
+        break;
+      }
+      let deleted = 0;
       for (const row of rows) {
         for (const [bucketId, fileId] of [
           [IDS.originals, row.originalFileId],
           [IDS.states, row.stateFileId],
         ] as const) {
           if (typeof fileId !== "string" || !fileId) continue;
-          await storage.deleteFile({ bucketId, fileId }).catch((e) => {
-            if (!isNotFound(e)) throw e;
-          });
+          // Only the row owner's own file (a row's file id must not delete someone else's file).
+          await deleteOwnedFile(storage, bucketId, fileId, row.ownerId);
         }
-        await tables.deleteRow({ databaseId: IDS.database, tableId: IDS.uploads, rowId: row.$id }).catch((e) => {
-          if (!isNotFound(e)) throw e;
-        });
+        const gone = await tables
+          .deleteRow({ databaseId: IDS.database, tableId: IDS.uploads, rowId: row.$id })
+          .then(() => true)
+          .catch((e) => {
+            if (!isNotFound(e)) throw e;
+            return false;
+          });
+        if (gone) deleted += 1;
       }
-      if (rows.length < PAGE) break;
+      if (rows.length < PAGE) done = true;
+      else if (deleted === 0) break; // nothing changed: listing again would loop forever
     }
+    if (!done) return { error: "Could not delete all of this user's uploads. Try again." };
 
     await users.delete({ userId });
   } catch (e) {
