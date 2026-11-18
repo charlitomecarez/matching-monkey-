@@ -74,6 +74,47 @@ export function planCommit(
   return decideCommit(current, baseVersion, newStateFileId);
 }
 
+/**
+ * Orphan recovery. A tab can die between creating `<id>.v(N+1)` and committing it; that file would
+ * block every later save from version N. The reclaim route may delete such a file once it is at
+ * least RECLAIM_MIN_AGE_MS old, and the commit route refuses any file older than COMMIT_MAX_AGE_MS.
+ * Because COMMIT_MAX_AGE_MS < RECLAIM_MIN_AGE_MS (both measured against the same clocks), a file
+ * old enough to be reclaimed can never still be committed, so reclaiming never discards a save
+ * that is about to succeed. The gap also absorbs a slow commit request.
+ */
+export const COMMIT_MAX_AGE_MS = 60_000;
+export const RECLAIM_MIN_AGE_MS = 120_000;
+export const SAVE_IN_PROGRESS_MESSAGE = "Another save is still in progress — try again in a moment.";
+
+function ageMs(createdAt: string, now: number): number {
+  const t = Date.parse(createdAt);
+  return Number.isNaN(t) ? Number.POSITIVE_INFINITY : now - t;
+}
+
+/** The new state file was created too long ago to be committed (unparseable = too old). */
+export function isTooOldToCommit(createdAt: string, now: number): boolean {
+  return ageMs(createdAt, now) > COMMIT_MAX_AGE_MS;
+}
+
+/** The pending state file is old enough to be treated as an orphan and deleted. */
+export function canReclaim(createdAt: string, now: number): boolean {
+  return ageMs(createdAt, now) >= RECLAIM_MIN_AGE_MS;
+}
+
+/** Which file a reclaim from baseVersion may clear; a moved version is a conflict. */
+export function planReclaim(
+  current: { version: number },
+  uploadId: string,
+  baseVersion: number,
+): { ok: true; fileId: string } | { ok: false } {
+  if (current.version !== baseVersion) return { ok: false };
+  return { ok: true, fileId: stateFileIdFor(uploadId, current.version + 1) };
+}
+
+export function parseReclaimBody(body: unknown): { baseVersion: number } {
+  return { baseVersion: count(asObject(body), "baseVersion") };
+}
+
 /** True when an Appwrite permission list grants the user read access directly. */
 export function grantsRead(permissions: string[], userId: string): boolean {
   return permissions.includes(`read("user:${userId}")`);

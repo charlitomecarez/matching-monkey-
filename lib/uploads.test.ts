@@ -4,7 +4,13 @@ import {
   ValidationError,
   assertOwner,
   decideCommit,
+  COMMIT_MAX_AGE_MS,
+  RECLAIM_MIN_AGE_MS,
+  canReclaim,
+  isTooOldToCommit,
   planCommit,
+  parseReclaimBody,
+  planReclaim,
   stateFileIdFor,
   grantsRead,
   parseCommitBody,
@@ -169,5 +175,57 @@ describe("planCommit", () => {
 
   it("never deletes the live file when a stale save names it", () => {
     expect(() => planCommit({ version: 4, stateFileId: "up1.v4" }, "up1", 3, "up1.v4")).toThrow(ValidationError);
+  });
+});
+
+describe("age thresholds", () => {
+  const created = "2026-11-18T10:00:00.000Z";
+  const t0 = Date.parse(created);
+
+  it("keeps the commit window shorter than the reclaim age", () => {
+    expect(COMMIT_MAX_AGE_MS).toBe(60_000);
+    expect(RECLAIM_MIN_AGE_MS).toBe(120_000);
+  });
+
+  it("isTooOldToCommit: allowed up to and at the limit, refused after", () => {
+    expect(isTooOldToCommit(created, t0)).toBe(false);
+    expect(isTooOldToCommit(created, t0 + COMMIT_MAX_AGE_MS)).toBe(false);
+    expect(isTooOldToCommit(created, t0 + COMMIT_MAX_AGE_MS + 1)).toBe(true);
+  });
+
+  it("canReclaim: refused below the age, allowed at and after it", () => {
+    expect(canReclaim(created, t0 + RECLAIM_MIN_AGE_MS - 1)).toBe(false);
+    expect(canReclaim(created, t0 + RECLAIM_MIN_AGE_MS)).toBe(true);
+    expect(canReclaim(created, t0 + RECLAIM_MIN_AGE_MS + 1)).toBe(true);
+  });
+
+  it("a reclaimable file is never committable", () => {
+    for (const age of [0, COMMIT_MAX_AGE_MS, COMMIT_MAX_AGE_MS + 1, RECLAIM_MIN_AGE_MS - 1, RECLAIM_MIN_AGE_MS, 10 * RECLAIM_MIN_AGE_MS]) {
+      if (canReclaim(created, t0 + age)) expect(isTooOldToCommit(created, t0 + age)).toBe(true);
+    }
+  });
+
+  it("treats an unparseable timestamp as too old to commit and reclaimable", () => {
+    expect(isTooOldToCommit("garbage", t0)).toBe(true);
+    expect(canReclaim("garbage", t0)).toBe(true);
+  });
+});
+
+describe("planReclaim", () => {
+  it("targets the next version's state file when the base matches", () => {
+    expect(planReclaim({ version: 3 }, "up1", 3)).toEqual({ ok: true, fileId: "up1.v4" });
+  });
+
+  it("is a conflict when the stored version moved", () => {
+    expect(planReclaim({ version: 4 }, "up1", 3)).toEqual({ ok: false });
+    expect(planReclaim({ version: 2 }, "up1", 3)).toEqual({ ok: false });
+  });
+});
+
+describe("parseReclaimBody", () => {
+  it("accepts a base version and rejects anything else", () => {
+    expect(parseReclaimBody({ baseVersion: 2 })).toEqual({ baseVersion: 2 });
+    expect(() => parseReclaimBody({ baseVersion: -1 })).toThrow(ValidationError);
+    expect(() => parseReclaimBody({})).toThrow(ValidationError);
   });
 });

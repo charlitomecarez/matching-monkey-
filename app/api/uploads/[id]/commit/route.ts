@@ -1,7 +1,7 @@
 import { createAdminClient } from "@/lib/appwrite/server";
 import { IDS } from "@/lib/appwrite/config";
 import { requireMember } from "@/lib/auth";
-import { CONFLICT_MESSAGE, parseCommitBody, planCommit } from "@/lib/uploads";
+import { CONFLICT_MESSAGE, isTooOldToCommit, parseCommitBody, planCommit } from "@/lib/uploads";
 import { claimFile, deleteFileQuietly, getOwnedRow, handle, readJson } from "@/lib/uploads-server";
 
 /**
@@ -12,6 +12,9 @@ import { claimFile, deleteFileQuietly, getOwnedRow, handle, readJson } from "@/l
  * file — the second gets 409 at createFile and never reaches this route. A save from an older base
  * fails the `row.version === baseVersion` check below (version only ever goes up). So no save can
  * silently overwrite another, without relying on transactions.
+ *
+ * A file older than COMMIT_MAX_AGE_MS is refused: after RECLAIM_MIN_AGE_MS the reclaim route may
+ * delete it as an orphan, and the commit window ending first means it can never be both.
  */
 export async function POST(request: Request, ctx: RouteContext<"/api/uploads/[id]/commit">) {
   return handle(async () => {
@@ -22,10 +25,10 @@ export async function POST(request: Request, ctx: RouteContext<"/api/uploads/[id
 
     const row = await getOwnedRow(tables, id, user.id);
     const plan = planCommit(row, id, baseVersion, stateFileId); // 400 before touching any file
-    await claimFile(storage, IDS.states, stateFileId, user.id);
+    const file = await claimFile(storage, IDS.states, stateFileId, user.id);
 
-    if (!plan.ok) {
-      await deleteFileQuietly(storage, IDS.states, plan.deleteFileId);
+    if (!plan.ok || isTooOldToCommit(file.$createdAt, Date.now())) {
+      await deleteFileQuietly(storage, IDS.states, stateFileId);
       return Response.json({ error: CONFLICT_MESSAGE }, { status: 409 });
     }
 

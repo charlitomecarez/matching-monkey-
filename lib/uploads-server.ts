@@ -21,7 +21,7 @@ export function ownerPermissions(userId: string): string[] {
   return [Permission.read(role), Permission.update(role), Permission.delete(role)];
 }
 
-const isNotFound = (e: unknown): boolean => e instanceof AppwriteException && e.code === 404;
+export const isNotFound = (e: unknown): boolean => e instanceof AppwriteException && e.code === 404;
 
 /** Runs a route body and maps known errors to JSON responses. */
 export async function handle(fn: () => Promise<Response>): Promise<Response> {
@@ -62,7 +62,12 @@ export async function getOwnedRow(tables: TablesDB, rowId: string, userId: strin
  * Checks the file exists and the caller can already read it (so nobody can claim another
  * user's file ID), then pins its permissions to the caller alone.
  */
-export async function claimFile(storage: Storage, bucketId: string, fileId: string, userId: string): Promise<void> {
+export async function claimFile(
+  storage: Storage,
+  bucketId: string,
+  fileId: string,
+  userId: string,
+): Promise<Models.File> {
   let file: Models.File;
   try {
     file = await storage.getFile({ bucketId, fileId });
@@ -71,7 +76,7 @@ export async function claimFile(storage: Storage, bucketId: string, fileId: stri
     throw e;
   }
   if (!grantsRead(file.$permissions, userId)) throw new ValidationError("File not found.");
-  await storage.updateFile({ bucketId, fileId, permissions: ownerPermissions(userId) });
+  return storage.updateFile({ bucketId, fileId, permissions: ownerPermissions(userId) });
 }
 
 /**
