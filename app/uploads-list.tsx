@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createUpload, deleteUpload, downloadOriginal, listUploads, renameUpload } from "@/lib/upload-client";
 import { MAX_NAME, type UploadMeta } from "@/lib/uploads";
+import LegacyImport from "./legacy-import";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -62,6 +63,13 @@ export default function UploadsList({ initial }: { initial: UploadMeta[] }) {
           />
         </label>
       </header>
+
+      <LegacyImport
+        onSaved={(meta) => {
+          setUploads((list) => [meta, ...list.filter((x) => x.id !== meta.id)]);
+          router.push(`/uploads/${meta.id}`);
+        }}
+      />
 
       {error && (
         <p role="alert" className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200">
