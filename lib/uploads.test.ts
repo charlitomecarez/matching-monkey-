@@ -3,7 +3,10 @@ import {
   NotFound,
   ValidationError,
   assertOwner,
+  committedCleanly,
   decideCommit,
+  isConflictError,
+  stagedVersionOk,
   grantsRead,
   parseCommitBody,
   parseCreateBody,
@@ -117,5 +120,45 @@ describe("toUploadMeta", () => {
       rowCount: 5,
       sheetCount: 1,
     });
+  });
+});
+
+describe("isConflictError", () => {
+  it("treats a max-exceeded (400) or transaction conflict (409) as a conflict", () => {
+    expect(isConflictError({ code: 400, type: "row_column_limit_exceeded" })).toBe(true);
+    expect(isConflictError({ code: 409 })).toBe(true);
+  });
+
+  it("does not treat other failures as a conflict", () => {
+    expect(isConflictError({ code: 404 })).toBe(false);
+    expect(isConflictError({ code: 500 })).toBe(false);
+    expect(isConflictError(new Error("network"))).toBe(false);
+    expect(isConflictError(null)).toBe(false);
+  });
+});
+
+describe("stagedVersionOk", () => {
+  it("accepts the bumped value or the untouched base value", () => {
+    expect(stagedVersionOk(4, 3)).toBe(true);
+    expect(stagedVersionOk(3, 3)).toBe(true);
+  });
+
+  it("rejects a value past the bump (someone else saved first)", () => {
+    expect(stagedVersionOk(5, 3)).toBe(false);
+  });
+
+  it("rejects a value below the base", () => {
+    expect(stagedVersionOk(2, 3)).toBe(false);
+  });
+});
+
+describe("committedCleanly", () => {
+  it("is true when the row holds exactly our version and file", () => {
+    expect(committedCleanly({ version: 4, stateFileId: "new" }, 3, "new")).toBe(true);
+  });
+
+  it("is false when the version moved further or the pointer differs", () => {
+    expect(committedCleanly({ version: 5, stateFileId: "new" }, 3, "new")).toBe(false);
+    expect(committedCleanly({ version: 4, stateFileId: "other" }, 3, "new")).toBe(false);
   });
 });

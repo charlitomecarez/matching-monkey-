@@ -46,6 +46,35 @@ export function decideCommit(
   return { ok: false, deleteFileId: newStateFileId };
 }
 
+/**
+ * An Appwrite error from the atomic version bump that means "someone else saved first":
+ * 400 = incrementRowColumn's `max` was exceeded, 409 = the transaction lost a write conflict.
+ * Duck-typed on `code` so this module stays SDK-free.
+ */
+export function isConflictError(e: unknown): boolean {
+  if (typeof e !== "object" || e === null) return false;
+  const code = (e as { code?: unknown }).code;
+  return code === 400 || code === 409;
+}
+
+/**
+ * Sanity check on the row returned by the staged increment. It may echo the bumped value
+ * (base + 1) or the untouched row (base) depending on how staging reports it; anything else
+ * means the stored version already moved past baseVersion.
+ */
+export function stagedVersionOk(stagedVersion: number, baseVersion: number): boolean {
+  return stagedVersion === baseVersion || stagedVersion === baseVersion + 1;
+}
+
+/** After commit: the row must hold exactly our bump and our state file. */
+export function committedCleanly(
+  row: { version: number; stateFileId: string },
+  baseVersion: number,
+  newStateFileId: string,
+): boolean {
+  return row.version === baseVersion + 1 && row.stateFileId === newStateFileId;
+}
+
 /** True when an Appwrite permission list grants the user read access directly. */
 export function grantsRead(permissions: string[], userId: string): boolean {
   return permissions.includes(`read("user:${userId}")`);
