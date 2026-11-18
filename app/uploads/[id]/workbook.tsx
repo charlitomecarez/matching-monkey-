@@ -1,136 +1,53 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useState, useSyncExternalStore } from "react";
+import { Autosaver, installUnloadGuard, savers, type SaverView } from "@/lib/autosave";
 import type { Sheet } from "@/lib/items";
-import { retryDelayMs } from "@/lib/save-plan";
 import { ApiError, SaveBusyError, downloadOriginal, loadState, saveState } from "@/lib/upload-client";
 import type { UploadMeta } from "@/lib/uploads";
-import MatchingApp, { type SaveStatus } from "../../matching-app";
+import MatchingApp from "../../matching-app";
 
-const DEBOUNCE_MS = 1500;
-
-type Autosaver = {
-  change: (sheets: Sheet[]) => void;
-  /** Save now instead of waiting for the debounce (tab hidden, page left). */
-  flushNow: () => void;
-  /** An edit is not saved yet, or a save is in flight. */
-  pending: () => boolean;
-};
-
-/**
- * Debounced autosave: one save in flight at a time, always saving the latest sheets. Network errors
- * retry with backoff and keep the edits; a conflict stops autosaving.
- */
-function createAutosaver(
-  meta: UploadMeta,
-  fileName: string,
-  initial: Sheet[],
-  report: (status: SaveStatus, message?: string) => void,
-): Autosaver {
-  let latest = initial;
-  let saved = initial;
-  let version = meta.version;
-  let inFlight = false;
-  let stopped = false; // after a conflict
-  let failing = false;
-  let failures = 0;
-  let notBefore = 0; // backoff: no save starts before this time
-  let timer: ReturnType<typeof setTimeout> | null = null;
-
-  const dirty = () => latest !== saved;
-
-  function schedule(ms: number) {
-    if (stopped) return;
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(
-      () => {
-        timer = null;
-        void flush();
-      },
-      Math.max(ms, notBefore - Date.now()),
-    );
-  }
-
-  function retryLater(ms: number) {
-    notBefore = Date.now() + ms;
-    schedule(ms);
-  }
-
-  async function flush() {
-    if (stopped || inFlight || !dirty()) return;
-    inFlight = true;
-    if (!failing) report("saving");
-    const snapshot = latest;
-    try {
-      const result = await saveState(meta, { v: 1, fileName, sheets: snapshot }, version);
-      if ("conflict" in result) {
-        stopped = true;
-        if (timer) clearTimeout(timer);
-        report("conflict", result.conflict);
-        return;
-      }
-      version = result.version;
-      saved = snapshot;
-      failing = false;
-      failures = 0;
-      notBefore = 0;
-    } catch (e) {
-      if (e instanceof SaveBusyError) {
-        report("saving");
-        retryLater(e.retryInMs);
-      } else {
-        failing = true;
-        failures += 1;
-        const signedOut = e instanceof ApiError && (e.status === 401 || e.status === 403);
-        report("error", signedOut ? "You're signed out. Sign in again in another tab to keep saving." : undefined);
-        retryLater(retryDelayMs(failures));
-      }
-      return;
-    } finally {
-      inFlight = false;
-    }
-    if (!dirty()) report("saved");
-    else if (!timer) void flush(); // edits arrived while saving and their debounce already fired
-  }
-
-  return {
-    change(sheets) {
-      latest = sheets;
-      if (stopped) return;
-      if (!failing) report("saving");
-      schedule(DEBOUNCE_MS);
-    },
-    flushNow() {
-      if (stopped || !timer || Date.now() < notBefore) return;
-      clearTimeout(timer);
-      timer = null;
-      void flush();
-    },
-    pending: () => dirty() || inFlight,
-  };
+function newSaver(meta: UploadMeta, fileName: string, sheets: Sheet[]): Autosaver {
+  return new Autosaver({
+    id: meta.id,
+    name: meta.name,
+    fileName,
+    sheets,
+    version: meta.version,
+    save: (state, baseVersion) => saveState(meta, state, baseVersion),
+    busyRetryMs: (e) => (e instanceof SaveBusyError ? e.retryInMs : null),
+    describeError: (e) =>
+      e instanceof ApiError && (e.status === 401 || e.status === 403)
+        ? "You're signed out. Sign in again in another tab to keep saving."
+        : undefined,
+  });
 }
 
-type Loaded = { fileName: string; sheets: Sheet[] };
+const noSubscribe = () => () => {};
+const IDLE: SaverView = { status: "saved", sheets: [] };
 
 export default function Workbook({ meta }: { meta: UploadMeta }) {
-  const [data, setData] = useState<Loaded | null>(null);
+  const id = meta.id;
+  // Reopened before an earlier save of this upload finished: continue from that saver (its latest
+  // sheets and version) instead of loading the older state from Storage.
+  const [saver, setSaver] = useState<Autosaver | null>(() => savers.get(id) ?? null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
-  const [status, setStatus] = useState<SaveStatus>("saved");
-  const [message, setMessage] = useState<string | undefined>();
   const [downloadError, setDownloadError] = useState<string | null>(null);
-  const saver = useRef<Autosaver | null>(null);
+
+  const load = useEffectEvent(() => loadState(meta));
 
   useEffect(() => {
+    installUnloadGuard();
+    if (saver) {
+      savers.attach(saver);
+      return () => savers.release(saver); // saves now; the save finishes in the background
+    }
     let cancelled = false;
-    loadState(meta).then(
+    load().then(
       (state) => {
         if (cancelled) return;
-        saver.current = createAutosaver(meta, state.fileName, state.sheets, (s, m) => {
-          setStatus(s);
-          setMessage(m);
-        });
-        setData({ fileName: state.fileName, sheets: state.sheets });
+        setSaver(savers.get(id) ?? newSaver(meta, state.fileName, state.sheets));
       },
       (e: unknown) => {
         if (!cancelled) setLoadError(e instanceof Error ? e.message : String(e));
@@ -139,33 +56,18 @@ export default function Workbook({ meta }: { meta: UploadMeta }) {
     return () => {
       cancelled = true;
     };
-  }, [meta, attempt]);
+    // `meta` is read through `load`/the initial props only: a re-render with an equal upload must not
+    // reload the state or replace the saver.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saver, id, attempt]);
 
-  useEffect(() => {
-    const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (!saver.current?.pending()) return;
-      e.preventDefault();
-      e.returnValue = ""; // older browsers need this to show the prompt
-    };
-    const flush = () => saver.current?.flushNow();
-    const onVisibility = () => {
-      if (document.visibilityState === "hidden") flush();
-    };
-    window.addEventListener("beforeunload", onBeforeUnload);
-    window.addEventListener("pagehide", flush);
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      window.removeEventListener("beforeunload", onBeforeUnload);
-      window.removeEventListener("pagehide", flush);
-      document.removeEventListener("visibilitychange", onVisibility);
-      flush(); // leaving via in-app navigation: save now; the save finishes in the background
-    };
-  }, []);
+  const view = useSyncExternalStore(
+    saver ? saver.subscribe : noSubscribe,
+    () => saver?.view ?? IDLE,
+    () => IDLE,
+  );
 
-  const onChange = useCallback((sheets: Sheet[]) => {
-    setData((d) => d && { ...d, sheets });
-    saver.current?.change(sheets);
-  }, []);
+  const onChange = useCallback((sheets: Sheet[]) => saver?.change(sheets), [saver]);
 
   const onDownloadOriginal = useCallback(() => {
     setDownloadError(null);
@@ -190,7 +92,7 @@ export default function Workbook({ meta }: { meta: UploadMeta }) {
       </div>
     );
   }
-  if (!data) {
+  if (!saver) {
     return <p className="mx-auto w-full max-w-7xl px-4 py-6 text-sm text-muted sm:px-6">Loading workbook…</p>;
   }
 
@@ -206,10 +108,10 @@ export default function Workbook({ meta }: { meta: UploadMeta }) {
       )}
       <MatchingApp
         fileName={meta.name}
-        sheets={data.sheets}
+        sheets={view.sheets}
         onChange={onChange}
-        saveStatus={status}
-        saveMessage={message}
+        saveStatus={view.status}
+        saveMessage={view.message}
         onDownloadOriginal={onDownloadOriginal}
       />
     </>

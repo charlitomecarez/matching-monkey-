@@ -14,10 +14,11 @@ import {
   type Sheet,
 } from "@/lib/items";
 import { writeWorkbook } from "@/lib/excel";
+import type { SaveStatus } from "@/lib/autosave";
 
 const PAGE_SIZE = 100;
 
-export type SaveStatus = "saved" | "saving" | "error" | "conflict";
+export type { SaveStatus };
 
 export type MatchingAppProps = {
   fileName: string;
